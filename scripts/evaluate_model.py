@@ -1,54 +1,62 @@
-import tensorflow as tf
+import os
 import numpy as np
 import pickle
-import os
+import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Tải dữ liệu huấn luyện và kiểm tra từ các tệp pickle
-with open('models/X.pickle', 'rb') as f:
-    X_train = pickle.load(f)
-with open('models/y.pickle', 'rb') as f:
-    y_train = pickle.load(f)
+# Constants
+MODEL_PATH = 'models/web_defacement_model.keras'
+MODEL_DIR = 'models'
+REPORTS_DIR = 'reports'
+NUM_CLASSES = 5
+TARGET_NAMES = ['clean', 'defaced_type_1', 'defaced_type_2', 'defaced_type_3', 'defaced_type_4']
 
-# Tạo dữ liệu kiểm tra (có thể chia từ X_train và y_train hoặc dữ liệu riêng biệt)
-X_test = X_train[-20:]  # Giả sử lấy 20% cuối làm dữ liệu kiểm tra
-y_test = y_train[-20:]
+# Load processed data
+def load_data(model_dir):
+    with open(os.path.join(model_dir, 'X_test.pickle'), 'rb') as f:
+        X_test = pickle.load(f)
+    with open(os.path.join(model_dir, 'y_test.pickle'), 'rb') as f:
+        y_test = pickle.load(f)
+    return X_test, y_test
 
-# Tải mô hình đã huấn luyện
-model = tf.keras.models.load_model('models/web_defacement_model.h5')
+# Load test data
+X_test, y_test = load_data(MODEL_DIR)
 
-# Dự đoán kết quả trên tập kiểm tra
-y_pred = model.predict(X_test)
+# Load the trained model
+try:
+    model = tf.keras.models.load_model(MODEL_PATH)
+    print(f"Model loaded successfully from {MODEL_PATH}")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    exit()
 
-# Chuyển kết quả dự đoán thành nhãn (bảng phân loại)
-y_pred_class = np.argmax(y_pred, axis=1)  # Chọn lớp có xác suất cao nhất
+# Predict results on the test set
+y_pred = model.predict(X_test, batch_size=32)
 
-# Tạo báo cáo phân loại
-target_names = ['clean', 'defaced_type_1', 'defaced_type_2', 'defaced_type_3', 'defaced_type_4']
-report = classification_report(y_test, y_pred_class, target_names=target_names)
+# Convert predictions to class labels
+y_pred_class = np.argmax(y_pred, axis=1)  # Get the index of the class with highest probability
+y_test_class = y_test  # Since y_test was not one-hot encoded
 
-# In ra báo cáo phân loại
+# Generate classification report
+report = classification_report(y_test_class, y_pred_class, target_names=TARGET_NAMES)
+
+# Print and save the classification report
 print("\nClassification Report:")
 print(report)
+with open(os.path.join(REPORTS_DIR, 'classification_report.txt'), 'w') as f:
+    f.write("Classification Report:\n")
+    f.write(report)
 
-# Tạo ma trận nhầm lẫn (Confusion Matrix)
-cm = confusion_matrix(y_test, y_pred_class)
-
-# Vẽ ma trận nhầm lẫn
-plt.figure(figsize=(8, 6))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=target_names, yticklabels=target_names)
+# Generate and save confusion matrix
+cm = confusion_matrix(y_test_class, y_pred_class)
+plt.figure(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=TARGET_NAMES, yticklabels=TARGET_NAMES)
 plt.title('Confusion Matrix')
 plt.xlabel('Predicted Labels')
 plt.ylabel('True Labels')
+plt.savefig(os.path.join(REPORTS_DIR, 'confusion_matrix.png'))
 plt.show()
 
-# Lưu báo cáo phân loại vào một tệp
-with open('reports/classification_report.txt', 'w') as f:
-    f.write("Classification Report:\n")
-    f.write(report)
-    f.write("\nConfusion Matrix:\n")
-    f.write(str(cm))
-
-print("Classification report and confusion matrix have been saved to 'reports/classification_report.txt'")
+print("Classification report and confusion matrix have been saved to the 'reports' directory.")

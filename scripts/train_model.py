@@ -1,70 +1,148 @@
+import os
 import numpy as np
 import pickle
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D
+from tensorflow.keras.layers import Dense, Flatten, Conv2D, MaxPooling2D, Dropout, BatchNormalization, Input
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.utils import to_categorical
-from sklearn.model_selection import train_test_split
+from tensorflow.keras.regularizers import l2
 import matplotlib.pyplot as plt
 
-# Đường dẫn đến các tệp đã được tiền xử lý
-X_FILE = 'models/X.pickle'
-Y_FILE = 'models/y.pickle'
+# Constants
+MODEL_SAVE_PATH = 'models/web_defacement_model.keras'
+MODEL_DIR = 'models'
+REPORTS_DIR = 'reports'
+NUM_CLASSES = 5
+INPUT_SHAPE = (299, 299, 3)
+BATCH_SIZE = 32  # Increased batch size
+EPOCHS = 10
 
-# Đọc dữ liệu từ các tệp pickle
-with open(X_FILE, 'rb') as f:
-    X = pickle.load(f)
-with open(Y_FILE, 'rb') as f:
-    y = pickle.load(f)
+# Create directories if they don't exist
+os.makedirs(MODEL_DIR, exist_ok=True)
+os.makedirs(REPORTS_DIR, exist_ok=True)
 
-# Chuyển đổi nhãn thành dạng one-hot encoding
-y = to_categorical(y, num_classes=5)  # 5 classes: clean, defaced_type_1, defaced_type_2, defaced_type_3, defaced_type_4
+# Load processed data
+def load_data(model_dir):
+    with open(os.path.join(model_dir, 'X_train.pickle'), 'rb') as f:
+        X_train = pickle.load(f)
+    with open(os.path.join(model_dir, 'y_train.pickle'), 'rb') as f:
+        y_train = pickle.load(f)
+    with open(os.path.join(model_dir, 'X_test.pickle'), 'rb') as f:
+        X_test = pickle.load(f)
+    with open(os.path.join(model_dir, 'y_test.pickle'), 'rb') as f:
+        y_test = pickle.load(f)
+    return X_train, y_train, X_test, y_test
 
-# Chia dữ liệu thành tập huấn luyện và kiểm tra
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# Load the data
+X_train, y_train, X_test, y_test = load_data(MODEL_DIR)
 
-# Xây dựng mô hình CNN
-model = Sequential()
+# Convert labels to one-hot encoding
+y_train = to_categorical(y_train, num_classes=NUM_CLASSES)
+y_test = to_categorical(y_test, num_classes=NUM_CLASSES)
+"""
+# Build the complex CNN model
+def build_model(input_shape, num_classes):
+    model = Sequential()
+    model.add(Input(shape=input_shape))
+    model.add(Conv2D(16, (3, 3), activation='relu', kernel_regularizer=l2(0.05)))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.6))
 
-# Thêm các lớp Convolutional và Pooling
-model.add(Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Conv2D(64, (3, 3), activation='relu'))
-model.add(MaxPooling2D(pool_size=(2, 2)))
-model.add(Conv2D(128, (3, 3), activation='relu'))
-model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Conv2D(32, (3, 3), activation='relu', kernel_regularizer=l2(0.05)))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.6))
 
-# Thêm lớp Flatten và Dense cho mô hình
-model.add(Flatten())
-model.add(Dense(128, activation='relu'))
-model.add(Dense(5, activation='softmax'))  # Sử dụng softmax cho đa lớp phân loại (clean + defaced)
+    model.add(Conv2D(64, (3, 3), activation='relu', kernel_regularizer=l2(0.05)))
+    model.add(BatchNormalization())
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Dropout(0.7))
 
-# Biên dịch mô hình
-model.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy'])
+    model.add(Flatten())
+    model.add(Dense(128, activation='relu', kernel_regularizer=l2(0.05)))
+    model.add(BatchNormalization())
+    model.add(Dropout(0.7))
+    model.add(Dense(num_classes, activation='softmax'))
+    return model
 
-# Huấn luyện mô hình
+
+# Compile the model
+model = build_model(INPUT_SHAPE, NUM_CLASSES)
+model.compile(optimizer=Adam(learning_rate=0.0005), loss='categorical_crossentropy', metrics=['accuracy'])  # Increased learning rate for faster convergence
+
+
+# Callbacks
+early_stopping = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True)  # Increased patience
+model_checkpoint = ModelCheckpoint(MODEL_SAVE_PATH, save_best_only=True, monitor='val_loss')
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=3, min_lr=1e-6, verbose=1)  # More aggressive learning rate reduction
+
+# Train the model
+history = model.fit(
+    X_train, y_train,
+    batch_size=BATCH_SIZE,
+    epochs=EPOCHS,
+    validation_data=(X_test, y_test),
+    callbacks=[early_stopping, model_checkpoint, reduce_lr]
+)
+
+# Save the final model
+model.save(MODEL_SAVE_PATH)
+"""
+
+
+# Build a simple CNN model
+model = tf.keras.Sequential([
+    tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(299, 299, 3)),
+    tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+    tf.keras.layers.Conv2D(64, (3, 3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+    tf.keras.layers.Conv2D(128, (3, 3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(pool_size=(2, 2)),
+    tf.keras.layers.Flatten(),
+    tf.keras.layers.Dense(128, activation='relu'),
+    tf.keras.layers.Dense(5, activation='softmax')  # 5 classes for classification
+])
+
+# Compile the model
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train the model
 history = model.fit(X_train, y_train, epochs=10, batch_size=32, validation_data=(X_test, y_test))
 
-# Lưu mô hình
-model.save('models/web_defacement_model.h5')
+# Save the model
+model_save_path = os.path.join(MODEL_DIR, 'web_defacement_model.keras')
+model.save(model_save_path)
 
-# Vẽ biểu đồ độ chính xác và hàm mất mát
-plt.figure(figsize=(12, 6))
+# Plot training history (accuracy and loss)
+def plot_training_history(history, report_dir):
+    plt.figure(figsize=(12, 6))
 
-# Biểu đồ độ chính xác
-plt.subplot(1, 2, 1)
-plt.plot(history.history['accuracy'], label='Huấn luyện')
-plt.plot(history.history['val_accuracy'], label='Kiểm tra')
-plt.legend()
-plt.title('Độ chính xác')
+    # Accuracy plot
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['accuracy'], label='Training Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.title('Model Accuracy')
 
-# Biểu đồ hàm mất mát
-plt.subplot(1, 2, 2)
-plt.plot(history.history['loss'], label='Huấn luyện')
-plt.plot(history.history['val_loss'], label='Kiểm tra')
-plt.legend()
-plt.title('Hàm mất mát')
+    # Loss plot
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Model Loss')
 
-# Lưu và hiển thị các biểu đồ
-plt.savefig('reports/training_performance.png')
-plt.show()
+    # Save and display the plots
+    plt.tight_layout()
+    plt.savefig(os.path.join(report_dir, 'training_performance.png'))
+    plt.show()
+
+plot_training_history(history, REPORTS_DIR)
+
+print("Training complete. The model and training report have been saved.")

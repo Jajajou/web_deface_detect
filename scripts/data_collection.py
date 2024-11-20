@@ -1,22 +1,41 @@
-import random
 import time
 import os
+import concurrent.futures
+import signal
+import sys
+import logging
+from queue import Queue
 from selenium import webdriver
 from selenium.webdriver.edge.service import Service
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
+from selenium.common.exceptions import WebDriverException
 
-# Đường dẫn thư mục lưu trữ ảnh
+
+# Paths to directories for storing screenshots
 CLEAN_DIR = 'dataset/clean/'
 DEFACED_DIR = 'dataset/defaced/'
+PROCESSED_URLS_FILE = 'processed_urls.txt'
 
-# Danh sách các URL trang web mẫu
-URLS = [
-    'http://www.raci.it/component/user/reset.html',
-    'http://www.vnic.co/',
-    'http://www.rockabilly.it/'
-]
+# Setup logging
+logging.basicConfig(filename='script.log', level=logging.DEBUG, format='%(asctime)s - %(message)s')
 
-# Định nghĩa các loại deface và script tương ứng
+# Load URLs from a text file
+URLS_FILE = 'dataset/urls.txt'
+
+def load_urls(file_path):
+    with open(file_path, 'r') as file:
+        urls = [line.strip() for line in file if line.strip()]
+    return urls
+
+# Load URLs into a list
+URLS = load_urls(URLS_FILE)
+
+# Defacement scripts dictionary
 DEFACEMENT_SCRIPTS = {
     'defaced_type_1': "document.body.innerHTML = '<h1>Hacked by XYZ</h1><p>Your website has been defaced!</p>';",
     'defaced_type_2': """
@@ -35,58 +54,127 @@ DEFACEMENT_SCRIPTS = {
     """
 }
 
-# Tạo thư mục lưu ảnh nếu chưa tồn tại
-if not os.path.exists(CLEAN_DIR):
-    os.makedirs(CLEAN_DIR)
-
-# Tạo các thư mục con cho từng loại deface
+# Create directories if they do not exist
+os.makedirs(CLEAN_DIR, exist_ok=True)
 for deface_type in DEFACEMENT_SCRIPTS.keys():
-    deface_path = os.path.join(DEFACED_DIR, deface_type)
-    if not os.path.exists(deface_path):
-        os.makedirs(deface_path)
+    os.makedirs(os.path.join(DEFACED_DIR, deface_type), exist_ok=True)
 
-# Khởi tạo WebDriver cho Edge
-driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()))
+# Signal handler to gracefully handle SIGINT (Ctrl + C)
+def signal_handler(sig, frame):
+    logging.info("Gracefully shutting down...")
+    sys.exit(0)
 
-# Hàm chụp ảnh màn hình trang web bình thường
-def capture_clean_images(num_images=20):
-    for i in range(num_images):
-        url = random.choice(URLS)  # Lấy ngẫu nhiên một URL từ danh sách
-        print(f"Capturing clean image {i} from {url}")  # In ra để kiểm tra
+# Register the signal handler
+signal.signal(signal.SIGINT, signal_handler)
+
+# Driver Pool Management
+driver_pool = Queue(maxsize=5)
+
+def create_driver():
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
+    try:
+        driver = webdriver.Edge(service=Service(EdgeChromiumDriverManager().install()), options=options)
+        driver.set_page_load_timeout(30)
+    except WebDriverException as e:
+        print(f"Error initializing the WebDriver: {e}")
+        return None
+    
+    return driver
+
+def create_driver_pool():
+    for _ in range(5):
+        driver = create_driver()
+        if driver:
+            driver_pool.put(driver)
+        else:
+            print("Failed to create driver. Skipping this instance.")
+
+def get_driver_from_pool():
+    try:
+        return driver_pool.get(timeout=5)
+    except Exception:
+        logging.error("Unable to get a WebDriver from pool")
+        return create_driver()  # Create a new one if pool is empty
+
+def return_driver_to_pool(driver):
+    driver_pool.put(driver)
+
+# Load already processed URLs from a file
+def load_processed_urls():
+    if not os.path.exists(PROCESSED_URLS_FILE):
+        return set()
+    with open(PROCESSED_URLS_FILE, 'r') as file:
+        return set(line.strip() for line in file)
+
+# Write processed URL to file
+def save_processed_url(url):
+    with open(PROCESSED_URLS_FILE, 'a') as file:
+        file.write(f"{url}\n")
+
+# Capture a clean image
+def capture_clean_image(url, index):
+    driver = get_driver_from_pool()
+    try:
+        logging.debug(f"Capturing clean image for URL: {url}")
         driver.get(url)
-        time.sleep(2)  # Chờ trang web tải xong
-        screenshot_path = os.path.join(CLEAN_DIR, f'clean_{i}.png')
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        screenshot_path = os.path.join(CLEAN_DIR, f'clean_{index}.png')
         driver.save_screenshot(screenshot_path)
-        print(f'Saved clean image: {screenshot_path}')  # Thông báo ảnh clean đã lưu
+        logging.info(f'Saved clean image: {screenshot_path}')
+        save_processed_url(url)
+    except TimeoutException:
+        logging.error(f"Timeout while trying to load URL: {url}")
+    finally:
+        return_driver_to_pool(driver)
 
-# Hàm chụp ảnh màn hình trang web bị deface (nhiều kiểu defacement)
-def capture_defaced_images(num_images=20):
+# Capture a defaced image for each deface type
+def capture_defaced_image(url, deface_type, script, index, deface_index):
+    driver = get_driver_from_pool()
+    try:
+        logging.debug(f"Attempting to deface URL: {url} with deface type: {deface_type}")
+        driver.get(url)
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        driver.execute_script(script)
+        time.sleep(3)  # Give extra time for JavaScript to fully apply
+        deface_path = os.path.join(DEFACED_DIR, deface_type, f'defaced_{index}_{deface_index}.png')
+        driver.save_screenshot(deface_path)
+        logging.info(f'Saved defaced image: {deface_path}')
+    except TimeoutException:
+        logging.error(f"Timeout while trying to load or deface URL: {url}")
+    except Exception as e:
+        logging.error(f"Error executing defacement for {url}: {e}")
+    finally:
+        return_driver_to_pool(driver)
+
+# Capture images for all URLs with all deface types
+def capture_images_concurrently():
     deface_types = list(DEFACEMENT_SCRIPTS.keys())
-    for i in range(num_images):
-        deface_type = random.choice(deface_types)  # Chọn ngẫu nhiên một loại deface
-        script = DEFACEMENT_SCRIPTS[deface_type]
-        url = random.choice(URLS)  # Lấy ngẫu nhiên một URL từ danh sách
-        print(f"Executing deface script {i} ({deface_type}) on {url}")  # In ra để kiểm tra
-        driver.get(url)
-        time.sleep(2)  # Chờ trang web tải xong
+    processed_urls = load_processed_urls()
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = []
         try:
-            driver.execute_script(script)
-        except Exception as e:
-            print(f"Error executing script for {deface_type}: {e}")
-            continue
+            for i, url in enumerate(URLS):
+                if url in processed_urls:
+                    logging.info(f"Skipping already processed URL: {url}")
+                    continue
+                futures.append(executor.submit(capture_clean_image, url, i))
+                for deface_index, deface_type in enumerate(deface_types):
+                    script = DEFACEMENT_SCRIPTS[deface_type]
+                    futures.append(executor.submit(capture_defaced_image, url, deface_type, script, i, deface_index))
+            concurrent.futures.wait(futures)
+        except KeyboardInterrupt:
+            logging.info("Graceful shutdown initiated by user interrupt.")
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=False)
+            sys.exit(0)
 
-        # Thêm thời gian chờ để chắc chắn rằng thay đổi đã được áp dụng
-        time.sleep(3)
-
-        # Lưu ảnh màn hình với tên khác nhau vào thư mục tương ứng
-        screenshot_path = os.path.join(DEFACED_DIR, deface_type, f'defaced_{i}.png')
-        driver.save_screenshot(screenshot_path)
-        print(f'Saved defaced image: {screenshot_path}')  # Thông báo đã lưu ảnh defaced
-
-# Chụp ảnh trang web bình thường và defaced với nhiều kiểu giả lập
-capture_clean_images()
-capture_defaced_images()
-
-# Đóng trình duyệt
-driver.quit()
+# Run the enhanced image capturing
+if __name__ == "__main__":
+    create_driver_pool()
+    capture_images_concurrently()
